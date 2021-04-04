@@ -766,6 +766,213 @@ static void NN_chain_core(const t_index N, t_float * const D, t_members * const 
   #endif
 }
 
+//compute distance on the fly
+template <method_codes method, typename t_members>
+static void NN_chain_core_otf(const t_index N, t_float * const D, t_members * const members, cluster_result & Z2) {
+/*
+    N: integer
+    D: condensed distance matrix N*(N-1)/2
+    Z2: output data structure
+
+    This is the NN-chain algorithm, described on page 86 in the following book:
+
+    Fionn Murtagh, Multidimensional Clustering Algorithms,
+    Vienna, Würzburg: Physica-Verlag, 1985.
+*/
+  t_index i;
+
+  auto_array_ptr<t_index> NN_chain(N);
+  t_index NN_chain_tip = 0;
+
+  t_index idx1, idx2;
+
+  t_float size1, size2;
+  doubly_linked_list active_nodes(N);
+
+  t_float min;
+
+  for (t_float const * DD=D; DD!=D+(static_cast<std::ptrdiff_t>(N)*(N-1)>>1);
+       ++DD) {
+#if HAVE_DIAGNOSTIC
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wfloat-equal"
+#endif
+    if (fc_isnan(*DD)) {
+      throw(nan_error());
+    }
+#if HAVE_DIAGNOSTIC
+#pragma GCC diagnostic pop
+#endif
+  }
+
+  #ifdef FE_INVALID
+  if (feclearexcept(FE_INVALID)) throw fenv_error();
+  #endif
+
+  for (t_index j=0; j<N-1; ++j) {
+    if (NN_chain_tip <= 3) {
+      NN_chain[0] = idx1 = active_nodes.start;
+      NN_chain_tip = 1;
+
+      idx2 = active_nodes.succ[idx1];
+      min = D_(idx1,idx2);
+      for (i=active_nodes.succ[idx2]; i<N; i=active_nodes.succ[i]) {
+        if (D_(idx1,i) < min) {
+          min = D_(idx1,i);
+          idx2 = i;
+        }
+      }
+    }  // a: idx1   b: idx2
+    else {
+      NN_chain_tip -= 3;
+      idx1 = NN_chain[NN_chain_tip-1];
+      idx2 = NN_chain[NN_chain_tip];
+      min = idx1<idx2 ? D_(idx1,idx2) : D_(idx2,idx1);
+    }  // a: idx1   b: idx2
+
+    do {
+      NN_chain[NN_chain_tip] = idx2;
+
+      for (i=active_nodes.start; i<idx2; i=active_nodes.succ[i]) {
+        if (D_(i,idx2) < min) {
+          min = D_(i,idx2);
+          idx1 = i;
+        }
+      }
+      for (i=active_nodes.succ[idx2]; i<N; i=active_nodes.succ[i]) {
+        if (D_(idx2,i) < min) {
+          min = D_(idx2,i);
+          idx1 = i;
+        }
+      }
+
+      idx2 = idx1;
+      idx1 = NN_chain[NN_chain_tip++];
+
+    } while (idx2 != NN_chain[NN_chain_tip-2]);
+
+    Z2.append(idx1, idx2, min);
+
+    if (idx1>idx2) {
+      t_index tmp = idx1;
+      idx1 = idx2;
+      idx2 = tmp;
+    }
+
+    if (method==METHOD_METR_AVERAGE ||
+        method==METHOD_METR_WARD) {
+      size1 = static_cast<t_float>(members[idx1]);
+      size2 = static_cast<t_float>(members[idx2]);
+      members[idx2] += members[idx1];
+    }
+
+    // Remove the smaller index from the valid indices (active_nodes).
+    active_nodes.remove(idx1);
+
+    switch (method) {
+    case METHOD_METR_SINGLE:
+      /*
+      Single linkage.
+
+      Characteristic: new distances are never longer than the old distances.
+      */
+      // Update the distance matrix in the range [start, idx1).
+      for (i=active_nodes.start; i<idx1; i=active_nodes.succ[i])
+        f_single(&D_(i, idx2), D_(i, idx1) );
+      // Update the distance matrix in the range (idx1, idx2).
+      for (; i<idx2; i=active_nodes.succ[i])
+        f_single(&D_(i, idx2), D_(idx1, i) );
+      // Update the distance matrix in the range (idx2, N).
+      for (i=active_nodes.succ[idx2]; i<N; i=active_nodes.succ[i])
+        f_single(&D_(idx2, i), D_(idx1, i) );
+      break;
+
+    case METHOD_METR_COMPLETE:
+      /*
+      Complete linkage.
+
+      Characteristic: new distances are never shorter than the old distances.
+      */
+      // Update the distance matrix in the range [start, idx1).
+      for (i=active_nodes.start; i<idx1; i=active_nodes.succ[i])
+        f_complete(&D_(i, idx2), D_(i, idx1) );
+      // Update the distance matrix in the range (idx1, idx2).
+      for (; i<idx2; i=active_nodes.succ[i])
+        f_complete(&D_(i, idx2), D_(idx1, i) );
+      // Update the distance matrix in the range (idx2, N).
+      for (i=active_nodes.succ[idx2]; i<N; i=active_nodes.succ[i])
+        f_complete(&D_(idx2, i), D_(idx1, i) );
+      break;
+
+    case METHOD_METR_AVERAGE: {
+      /*
+      Average linkage.
+
+      Shorter and longer distances can occur.
+      */
+      // Update the distance matrix in the range [start, idx1).
+      t_float s = size1/(size1+size2);
+      t_float t = size2/(size1+size2);
+      for (i=active_nodes.start; i<idx1; i=active_nodes.succ[i])
+        f_average(&D_(i, idx2), D_(i, idx1), s, t );
+      // Update the distance matrix in the range (idx1, idx2).
+      for (; i<idx2; i=active_nodes.succ[i])
+        f_average(&D_(i, idx2), D_(idx1, i), s, t );
+      // Update the distance matrix in the range (idx2, N).
+      for (i=active_nodes.succ[idx2]; i<N; i=active_nodes.succ[i])
+        f_average(&D_(idx2, i), D_(idx1, i), s, t );
+      break;
+    }
+
+    case METHOD_METR_WEIGHTED:
+      /*
+      Weighted linkage.
+
+      Shorter and longer distances can occur.
+      */
+      // Update the distance matrix in the range [start, idx1).
+      for (i=active_nodes.start; i<idx1; i=active_nodes.succ[i])
+        f_weighted(&D_(i, idx2), D_(i, idx1) );
+      // Update the distance matrix in the range (idx1, idx2).
+      for (; i<idx2; i=active_nodes.succ[i])
+        f_weighted(&D_(i, idx2), D_(idx1, i) );
+      // Update the distance matrix in the range (idx2, N).
+      for (i=active_nodes.succ[idx2]; i<N; i=active_nodes.succ[i])
+        f_weighted(&D_(idx2, i), D_(idx1, i) );
+      break;
+
+    case METHOD_METR_WARD:
+      /*
+      Ward linkage.
+
+      Shorter and longer distances can occur, not smaller than min(d1,d2)
+      but maybe bigger than max(d1,d2).
+      */
+      // Update the distance matrix in the range [start, idx1).
+      //t_float v = static_cast<t_float>(members[i]);
+      for (i=active_nodes.start; i<idx1; i=active_nodes.succ[i])
+        f_ward(&D_(i, idx2), D_(i, idx1), min,
+               size1, size2, static_cast<t_float>(members[i]) );
+      // Update the distance matrix in the range (idx1, idx2).
+      for (; i<idx2; i=active_nodes.succ[i])
+        f_ward(&D_(i, idx2), D_(idx1, i), min,
+               size1, size2, static_cast<t_float>(members[i]) );
+      // Update the distance matrix in the range (idx2, N).
+      for (i=active_nodes.succ[idx2]; i<N; i=active_nodes.succ[i])
+        f_ward(&D_(idx2, i), D_(idx1, i), min,
+               size1, size2, static_cast<t_float>(members[i]) );
+      break;
+
+    default:
+      throw std::runtime_error(std::string("Invalid method."));
+    }
+  }
+  #ifdef FE_INVALID
+  if (fetestexcept(FE_INVALID)) throw fenv_error();
+  #endif
+}
+
+
 class binary_min_heap {
   /*
   Class for a binary min-heap. The data resides in an array A. The elements of
