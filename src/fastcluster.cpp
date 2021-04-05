@@ -251,6 +251,12 @@ public:
     }
   }
 
+  void square() const {
+    for (node * ZZ=Z; ZZ!=Z+pos; ++ZZ) {
+      ZZ->dist *= ZZ->dist;
+    }
+  }
+
   void sqrt(const t_float) const { // ignore the argument
     sqrt();
   }

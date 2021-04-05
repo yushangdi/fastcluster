@@ -479,11 +479,9 @@ static PyObject *linkage_vector_wrap_nnchain(PyObject * const, PyObject * const 
       throw std::runtime_error(std::string("Invalid method index."));
     }
 
-    // if (method==METHOD_METR_WARD ||
-    //     method==METHOD_METR_CENTROID ||
-    //     method==METHOD_METR_MEDIAN) {
-    //   Z2.sqrt();
-    // }
+    if (method==METHOD_METR_AVERAGE) {
+      Z2.square();
+    }
 
     t_float * const Z_ = reinterpret_cast<t_float *>(PyArray_DATA(Z));
     if (method==METHOD_METR_CENTROID ||
