@@ -766,12 +766,106 @@ static void NN_chain_core(const t_index N, t_float * const D, t_members * const 
   #endif
 }
 
+t_float pointDistSq(t_float * const p, t_float * const q, int dim) {
+  float_t xx=0;
+  for (int i=0; i<dim; ++i) xx += (p[i]-q[i])*(p[i]-q[i]);
+  return xx;
+} 
+
+struct AvgComputer{
+  t_float * vars;
+  t_index * sizes;
+  t_float * centers;
+  int dim;
+
+  AvgComputer(t_index * const _members, t_float * const Data, int _dim, t_index n):
+   sizes(_members), dim(_dim){
+    vars = (t_float *)malloc(n * sizeof(t_float));
+    for(t_index i=0; i<n;++i){
+      vars[i] = 0;
+    }
+
+    centers = (t_float *)malloc(n * dim * sizeof(t_float));
+    for(t_index i=0; i<n*dim;++i){
+      centers[i] = Data[i];
+    }
+  }
+
+  inline double dist(t_index idx1, t_index idx2){
+    return sqrt(pointDistSq(centers + (idx1 * dim) , centers + (idx2 * dim), dim) + vars[idx1] + vars[idx2]);
+  }
+  
+  void merge_inplace(const t_index i, const t_index j) const {
+    t_float const * const Pi = centers+i*dim;
+    t_float * const Pj = centers+j*dim;
+    t_float newCenter[dim];
+    for(t_index k=0; k<dim; ++k) {
+      newCenter[k] = (Pi[k]*static_cast<t_float>(sizes[i]) +
+               Pj[k]*static_cast<t_float>(sizes[j])) /
+        static_cast<t_float>(sizes[i]+sizes[j]);
+    }
+
+    vars[j] = sizes[i] * pointDistSq(centers + (i * dim) , newCenter, dim) + \
+          sizes[j] * pointDistSq(centers + (j * dim) , newCenter, dim) + \
+          sizes[i] * vars[i] + sizes[j] * vars[j]; 
+    vars[j] /= static_cast<t_float>(sizes[i]+sizes[j]);
+
+    for(t_index k=0; k<dim; ++k) {
+      Pj[k] = newCenter[k];
+    }
+
+    sizes[j] += sizes[i];
+  }
+
+  ~AvgComputer(){
+    free(vars);
+    free(centers);
+  }
+};
+
+struct WardComputer{
+  t_index * sizes;
+  t_float * centers;
+  int dim;
+
+  WardComputer(t_index * const _members, t_float * const Data, int _dim, t_index n):
+  sizes(_members), dim(_dim){
+    centers = (t_float *)malloc(n * dim * sizeof(t_float));
+    for(t_index i=0; i<n*dim;++i){
+      centers[i] = Data[i];
+    }
+  }
+
+  inline double dist(t_index idx1, t_index idx2){
+    double ni = (double) sizes[idx1]; 
+    double nj = (double) sizes[idx2];
+    return sqrt(2*(ni*nj)*pointDistSq(centers + (idx1 * dim) , centers + (idx2 * dim), dim)/(ni + nj));
+  }
+
+  void merge_inplace(const t_index i, const t_index j) const {
+    t_float const * const Pi = centers+i*dim;
+    t_float * const Pj = centers+j*dim;
+    for(t_index k=0; k<dim; ++k) {
+      Pj[k] = (Pi[k]*static_cast<t_float>(sizes[i]) +
+               Pj[k]*static_cast<t_float>(sizes[j])) /
+        static_cast<t_float>(sizes[i]+sizes[j]);
+    }
+    sizes[j] += sizes[i];
+  }
+
+  ~WardComputer(){
+    free(centers);
+  }
+};
+
 //compute distance on the fly
-template <method_codes method, typename t_members>
-static void NN_chain_core_otf(const t_index N, t_float * const D, t_members * const members, cluster_result & Z2) {
+// members: sizes
+// vars: variances
+// only works for wards and euclideansqr average
+template <method_codes method, typename t_members, class distF>
+static void NN_chain_core_otf( t_float * const Data, int dim, const t_index N, t_members * const members, cluster_result & Z2) {
 /*
     N: integer
-    D: condensed distance matrix N*(N-1)/2
     Z2: output data structure
 
     This is the NN-chain algorithm, described on page 86 in the following book:
@@ -786,28 +880,12 @@ static void NN_chain_core_otf(const t_index N, t_float * const D, t_members * co
 
   t_index idx1, idx2;
 
-  t_float size1, size2;
+  // t_float size1, size2;
   doubly_linked_list active_nodes(N);
 
   t_float min;
-
-  for (t_float const * DD=D; DD!=D+(static_cast<std::ptrdiff_t>(N)*(N-1)>>1);
-       ++DD) {
-#if HAVE_DIAGNOSTIC
-#pragma GCC diagnostic push
-#pragma GCC diagnostic ignored "-Wfloat-equal"
-#endif
-    if (fc_isnan(*DD)) {
-      throw(nan_error());
-    }
-#if HAVE_DIAGNOSTIC
-#pragma GCC diagnostic pop
-#endif
-  }
-
-  #ifdef FE_INVALID
-  if (feclearexcept(FE_INVALID)) throw fenv_error();
-  #endif
+  
+  distF distComputer = distF(members, Data, dim, N);
 
   for (t_index j=0; j<N-1; ++j) {
     if (NN_chain_tip <= 3) {
@@ -815,10 +893,10 @@ static void NN_chain_core_otf(const t_index N, t_float * const D, t_members * co
       NN_chain_tip = 1;
 
       idx2 = active_nodes.succ[idx1];
-      min = D_(idx1,idx2);
+      min = distComputer.dist(idx1,idx2);
       for (i=active_nodes.succ[idx2]; i<N; i=active_nodes.succ[i]) {
-        if (D_(idx1,i) < min) {
-          min = D_(idx1,i);
+        if (distComputer.dist(idx1,i) < min) {
+          min = distComputer.dist(idx1,i);
           idx2 = i;
         }
       }
@@ -827,21 +905,21 @@ static void NN_chain_core_otf(const t_index N, t_float * const D, t_members * co
       NN_chain_tip -= 3;
       idx1 = NN_chain[NN_chain_tip-1];
       idx2 = NN_chain[NN_chain_tip];
-      min = idx1<idx2 ? D_(idx1,idx2) : D_(idx2,idx1);
+      min = idx1<idx2 ? distComputer.dist(idx1,idx2) : distComputer.dist(idx2,idx1);
     }  // a: idx1   b: idx2
 
     do {
       NN_chain[NN_chain_tip] = idx2;
 
       for (i=active_nodes.start; i<idx2; i=active_nodes.succ[i]) {
-        if (D_(i,idx2) < min) {
-          min = D_(i,idx2);
+        if (distComputer.dist(i,idx2) < min) {
+          min = distComputer.dist(i,idx2);
           idx1 = i;
         }
       }
       for (i=active_nodes.succ[idx2]; i<N; i=active_nodes.succ[i]) {
-        if (D_(idx2,i) < min) {
-          min = D_(idx2,i);
+        if (distComputer.dist(idx2,i) < min) {
+          min = distComputer.dist(idx2,i);
           idx1 = i;
         }
       }
@@ -859,113 +937,25 @@ static void NN_chain_core_otf(const t_index N, t_float * const D, t_members * co
       idx2 = tmp;
     }
 
-    if (method==METHOD_METR_AVERAGE ||
-        method==METHOD_METR_WARD) {
-      size1 = static_cast<t_float>(members[idx1]);
-      size2 = static_cast<t_float>(members[idx2]);
-      members[idx2] += members[idx1];
-    }
+    distComputer.merge_inplace(idx1, idx2);
+    // if (method==METHOD_METR_AVERAGE ||
+    //     method==METHOD_METR_WARD) {
+    //   size1 = static_cast<t_float>(members[idx1]);
+    //   size2 = static_cast<t_float>(members[idx2]);
+      
+    //   //TODO : update vars
+    //   // vars[idx2] = size1 * left_mu.pointDistSq(clusterNode->center) + \
+    //   //           size2 * right_mu.pointDistSq(clusterNode->center) + \
+    //   //           size1 * vars[idx1] + size2 * vars[idx2]; 
+    //   // vars[idx2] /= (size1 +size2);
+    //   members[idx2] += members[idx1];
+    // }
 
     // Remove the smaller index from the valid indices (active_nodes).
     active_nodes.remove(idx1);
 
-    switch (method) {
-    case METHOD_METR_SINGLE:
-      /*
-      Single linkage.
+    //no need to update matrix
 
-      Characteristic: new distances are never longer than the old distances.
-      */
-      // Update the distance matrix in the range [start, idx1).
-      for (i=active_nodes.start; i<idx1; i=active_nodes.succ[i])
-        f_single(&D_(i, idx2), D_(i, idx1) );
-      // Update the distance matrix in the range (idx1, idx2).
-      for (; i<idx2; i=active_nodes.succ[i])
-        f_single(&D_(i, idx2), D_(idx1, i) );
-      // Update the distance matrix in the range (idx2, N).
-      for (i=active_nodes.succ[idx2]; i<N; i=active_nodes.succ[i])
-        f_single(&D_(idx2, i), D_(idx1, i) );
-      break;
-
-    case METHOD_METR_COMPLETE:
-      /*
-      Complete linkage.
-
-      Characteristic: new distances are never shorter than the old distances.
-      */
-      // Update the distance matrix in the range [start, idx1).
-      for (i=active_nodes.start; i<idx1; i=active_nodes.succ[i])
-        f_complete(&D_(i, idx2), D_(i, idx1) );
-      // Update the distance matrix in the range (idx1, idx2).
-      for (; i<idx2; i=active_nodes.succ[i])
-        f_complete(&D_(i, idx2), D_(idx1, i) );
-      // Update the distance matrix in the range (idx2, N).
-      for (i=active_nodes.succ[idx2]; i<N; i=active_nodes.succ[i])
-        f_complete(&D_(idx2, i), D_(idx1, i) );
-      break;
-
-    case METHOD_METR_AVERAGE: {
-      /*
-      Average linkage.
-
-      Shorter and longer distances can occur.
-      */
-      // Update the distance matrix in the range [start, idx1).
-      t_float s = size1/(size1+size2);
-      t_float t = size2/(size1+size2);
-      for (i=active_nodes.start; i<idx1; i=active_nodes.succ[i])
-        f_average(&D_(i, idx2), D_(i, idx1), s, t );
-      // Update the distance matrix in the range (idx1, idx2).
-      for (; i<idx2; i=active_nodes.succ[i])
-        f_average(&D_(i, idx2), D_(idx1, i), s, t );
-      // Update the distance matrix in the range (idx2, N).
-      for (i=active_nodes.succ[idx2]; i<N; i=active_nodes.succ[i])
-        f_average(&D_(idx2, i), D_(idx1, i), s, t );
-      break;
-    }
-
-    case METHOD_METR_WEIGHTED:
-      /*
-      Weighted linkage.
-
-      Shorter and longer distances can occur.
-      */
-      // Update the distance matrix in the range [start, idx1).
-      for (i=active_nodes.start; i<idx1; i=active_nodes.succ[i])
-        f_weighted(&D_(i, idx2), D_(i, idx1) );
-      // Update the distance matrix in the range (idx1, idx2).
-      for (; i<idx2; i=active_nodes.succ[i])
-        f_weighted(&D_(i, idx2), D_(idx1, i) );
-      // Update the distance matrix in the range (idx2, N).
-      for (i=active_nodes.succ[idx2]; i<N; i=active_nodes.succ[i])
-        f_weighted(&D_(idx2, i), D_(idx1, i) );
-      break;
-
-    case METHOD_METR_WARD:
-      /*
-      Ward linkage.
-
-      Shorter and longer distances can occur, not smaller than min(d1,d2)
-      but maybe bigger than max(d1,d2).
-      */
-      // Update the distance matrix in the range [start, idx1).
-      //t_float v = static_cast<t_float>(members[i]);
-      for (i=active_nodes.start; i<idx1; i=active_nodes.succ[i])
-        f_ward(&D_(i, idx2), D_(i, idx1), min,
-               size1, size2, static_cast<t_float>(members[i]) );
-      // Update the distance matrix in the range (idx1, idx2).
-      for (; i<idx2; i=active_nodes.succ[i])
-        f_ward(&D_(i, idx2), D_(idx1, i), min,
-               size1, size2, static_cast<t_float>(members[i]) );
-      // Update the distance matrix in the range (idx2, N).
-      for (i=active_nodes.succ[idx2]; i<N; i=active_nodes.succ[i])
-        f_ward(&D_(idx2, i), D_(idx1, i), min,
-               size1, size2, static_cast<t_float>(members[i]) );
-      break;
-
-    default:
-      throw std::runtime_error(std::string("Invalid method."));
-    }
   }
   #ifdef FE_INVALID
   if (fetestexcept(FE_INVALID)) throw fenv_error();

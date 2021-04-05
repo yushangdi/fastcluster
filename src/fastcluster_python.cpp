@@ -41,6 +41,8 @@
 #pragma GCC diagnostic pop
 #endif
 
+#include <iostream>
+
 /* It's complicated, but if I do not include the C++ math headers, GCC
    will complain about conversions from 'double' to 'float', whenever 'isnan'
    is called in a templated function (but not outside templates).
@@ -148,11 +150,13 @@ static void generate_SciPy_dendrogram(t_float * const Z, cluster_result & Z2, co
 */
 static PyObject * linkage_wrap(PyObject * const self, PyObject * const args);
 static PyObject * linkage_vector_wrap(PyObject * const self, PyObject * const args);
+static PyObject * linkage_vector_wrap_nnchain(PyObject * const self, PyObject * const args);
 
 // List the C++ methods that this extension provides.
 static PyMethodDef _fastclusterWrapMethods[] = {
   {"linkage_wrap", linkage_wrap, METH_VARARGS, NULL},
   {"linkage_vector_wrap", linkage_vector_wrap, METH_VARARGS, NULL},
+  {"linkage_vector_wrap_nnchain", linkage_vector_wrap_nnchain, METH_VARARGS, NULL},
   {NULL, NULL, 0, NULL}    /* Sentinel - marks the end of this structure */
 };
 
@@ -342,6 +346,144 @@ static PyObject *linkage_wrap(PyObject * const, PyObject * const args) {
         method==METHOD_METR_MEDIAN) {
       Z2.sqrt();
     }
+
+    t_float * const Z_ = reinterpret_cast<t_float *>(PyArray_DATA(Z));
+    if (method==METHOD_METR_CENTROID ||
+        method==METHOD_METR_MEDIAN) {
+      generate_SciPy_dendrogram<true>(Z_, Z2, N);
+    }
+    else {
+      generate_SciPy_dendrogram<false>(Z_, Z2, N);
+    }
+  } // try
+  catch (const std::bad_alloc&) {
+    return PyErr_NoMemory();
+  }
+  catch(const std::exception& e){
+    PyErr_SetString(PyExc_EnvironmentError, e.what());
+    return NULL;
+  }
+  catch(const nan_error&){
+    PyErr_SetString(PyExc_FloatingPointError, "NaN dissimilarity value.");
+    return NULL;
+  }
+  #ifdef FE_INVALID
+  catch(const fenv_error&){
+    PyErr_SetString(PyExc_FloatingPointError,
+                    "NaN dissimilarity value in intermediate results.");
+    return NULL;
+  }
+  #endif
+  catch(...){
+    PyErr_SetString(PyExc_EnvironmentError,
+                    "C++ exception (unknown reason). Please send a bug report.");
+    return NULL;
+  }
+#if HAVE_DIAGNOSTIC
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wold-style-cast"
+#endif
+  Py_RETURN_NONE;
+#if HAVE_DIAGNOSTIC
+#pragma GCC diagnostic pop
+#endif
+}
+
+
+static PyObject *linkage_vector_wrap_nnchain(PyObject * const, PyObject * const args) {
+  PyArrayObject * X, * Z;
+  unsigned char method, metric;
+  PyObject * extraarg;
+
+  try{
+#if HAVE_DIAGNOSTIC
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wold-style-cast"
+#endif
+    // Parse the input arguments
+    if (!PyArg_ParseTuple(args, "O!O!bbO",
+                          &PyArray_Type, &X, // NumPy array
+                          &PyArray_Type, &Z, // NumPy array
+                          &method,           // unsigned char
+                          &metric,           // unsigned char
+                          &extraarg )) {     // Python object
+      return NULL;
+    }
+#if HAVE_DIAGNOSTIC
+#pragma GCC diagnostic pop
+#endif
+
+    if (PyArray_NDIM(X) != 2) {
+      PyErr_SetString(PyExc_ValueError,
+                      "The input array must be two-dimensional.");
+    }
+    npy_intp const N_ = PyArray_DIM(X, 0);
+    if (N_ < 1 ) {
+      // N must be at least 1.
+      PyErr_SetString(PyExc_ValueError,
+                      "At least one element is needed for clustering.");
+      return NULL;
+    }
+
+    npy_intp const dim = PyArray_DIM(X, 1);
+    if (dim < 1 ) {
+      PyErr_SetString(PyExc_ValueError,
+                      "Invalid dimension of the data set.");
+      return NULL;
+    }
+
+    /*
+      (1)
+      The biggest index used below is 4*(N-2)+3, as an index to Z. This must
+      fit into the data type used for indices.
+      (2)
+      The largest representable integer, without loss of precision, by a
+      floating point number of type t_float is 2^T_FLOAT_MANT_DIG. Here, we
+      make sure that all cluster labels from 0 to 2N-2 in the output can be
+      accurately represented by a floating point number.
+
+      Conversion of N to 64 bits below is not really necessary but it prevents
+      a warning ("shift count >= width of type") on systems where "long int"
+      is 32 bits wide.
+    */
+    if (N_ > MAX_INDEX/4 || dim > MAX_INDEX ||
+        static_cast<int64_t>(N_-1)>>(T_FLOAT_MANT_DIG-1) > 0) {
+      PyErr_SetString(PyExc_ValueError,
+                      "Data is too big, index overflow.");
+      return NULL;
+    }
+    t_index N = static_cast<t_index>(N_);
+
+    // Allow threads!
+    GIL_release G;
+
+    t_float * const Xa = reinterpret_cast<t_float *>(PyArray_DATA(X));
+    cluster_result Z2(N-1);
+    auto_array_ptr<t_index> members;
+    // For these methods, the distance update formula needs the number of
+    // data points in a cluster.
+    if (method==METHOD_METR_AVERAGE ||
+        method==METHOD_METR_WARD ||
+        method==METHOD_METR_CENTROID) {
+      members.init(N, 1);
+    }
+
+    switch (method) {
+    case METHOD_METR_AVERAGE:
+      NN_chain_core_otf<METHOD_METR_AVERAGE, t_index, AvgComputer>(Xa, dim, N, members, Z2);
+      break;
+    case METHOD_METR_WARD:
+      NN_chain_core_otf<METHOD_METR_WARD, t_index, WardComputer>(Xa, dim, N, members, Z2);
+      break;
+    default:
+      throw std::runtime_error(std::string("Invalid method index."));
+    }
+
+    // if (method==METHOD_METR_WARD ||
+    //     method==METHOD_METR_CENTROID ||
+    //     method==METHOD_METR_MEDIAN) {
+    //   Z2.sqrt();
+    // }
 
     t_float * const Z_ = reinterpret_cast<t_float *>(PyArray_DATA(Z));
     if (method==METHOD_METR_CENTROID ||

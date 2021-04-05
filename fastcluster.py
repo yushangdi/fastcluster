@@ -34,7 +34,7 @@ except ImportError:
                           'vector data since the function '
                           'scipy.spatial.distance.pdist could not be  '
                           'imported.')
-from _fastcluster import linkage_wrap, linkage_vector_wrap
+from _fastcluster import linkage_wrap, linkage_vector_wrap, linkage_vector_wrap_nnchain
 
 def single(D):
     '''Single linkage clustering (alias). See the help on the “linkage”
@@ -273,6 +273,24 @@ mtridx = {'euclidean'      :  0,
 
 booleanmetrics = ('yule', 'matching', 'dice', 'kulsinski', 'rogerstanimoto',
                   'sokalmichener', 'russellrao', 'sokalsneath', 'kulsinski')
+
+def linkage_vector_nnchain(X, method='ward', metric='euclidean', extraarg=None):
+    if method=='average':
+        assert metric=='sqeuclidean'
+    elif method == 'ward':
+        assert metric=='euclidean'
+    else:
+        print("wrong method")
+        return
+
+    X = array(X, dtype=double, copy=True, order='C', subok=True)
+    assert X.ndim==2
+    N = len(X)
+    Z = empty((N-1,4))
+
+    if N > 1:
+        linkage_vector_wrap_nnchain(X, Z, mthidx[method], mtridx[metric], extraarg)
+    return Z
 
 def linkage_vector(X, method='single', metric='euclidean', extraarg=None):
     r'''Hierarchical (agglomerative) clustering on Euclidean data.
