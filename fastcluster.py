@@ -26,6 +26,7 @@ __version__ = '.'.join(__version_info__)
 from numpy import double, empty, array, ndarray, var, cov, dot, expand_dims, \
     ceil, sqrt
 from numpy.linalg import inv
+import time
 try:
     from scipy.spatial.distance import pdist
 except ImportError:
@@ -227,6 +228,7 @@ raised.
 
 The linkage method does not treat NumPy's masked arrays as special
 and simply ignores the mask.'''
+    start_time = time.time()
     X = array(X, copy=False, subok=True)
     if X.ndim==1:
         if method=='single':
@@ -242,9 +244,12 @@ and simply ignores the mask.'''
         N = len(X)
         X = pdist(X, metric=metric)
         X = array(X, dtype=double, copy=False, order='C', subok=True)
+    print("matrix: ", time.time()-start_time)
+    start_time = time.time()
     Z = empty((N-1,4))
     if N > 1:
         linkage_wrap(N, X, Z, mthidx[method])
+    print("hierarchy: ", time.time()-start_time)
     return Z
 
 # This dictionary must agree with the enum metric_codes in fastcluster_python.cpp.
@@ -275,6 +280,7 @@ booleanmetrics = ('yule', 'matching', 'dice', 'kulsinski', 'rogerstanimoto',
                   'sokalmichener', 'russellrao', 'sokalsneath', 'kulsinski')
 
 def linkage_vector_nnchain(X, method='ward', metric='euclidean', extraarg=None):
+    start_time = time.time()
     if method=='average':
         assert metric=='sqeuclidean'
     elif method == 'ward':
@@ -290,6 +296,7 @@ def linkage_vector_nnchain(X, method='ward', metric='euclidean', extraarg=None):
 
     if N > 1:
         linkage_vector_wrap_nnchain(X, Z, mthidx[method], mtridx[metric], extraarg)
+    print("hierarchy: ", time.time()-start_time)
     return Z
 
 def linkage_vector(X, method='single', metric='euclidean', extraarg=None):
@@ -474,6 +481,7 @@ metric='matching':
   (False, True) but the Hamming distance is 0.5.
 
 metric='sokalmichener' is an alias for 'matching'.'''
+    start_time = time.time()
     if method=='single':
         assert metric!='USER'
         if metric in ('hamming', 'jaccard'):
@@ -508,4 +516,5 @@ metric='sokalmichener' is an alias for 'matching'.'''
         assert extraarg is None
     if N > 1:
         linkage_vector_wrap(X, Z, mthidx[method], mtridx[metric], extraarg)
+    print("hierarchy: ", time.time()-start_time)
     return Z

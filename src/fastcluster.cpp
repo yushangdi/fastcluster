@@ -142,6 +142,13 @@ typedef int_fast32_t t_index;
 #endif
 typedef double t_float;
 
+
+#define TIMING
+
+#ifdef TIMING
+#include "gettime.h"
+#endif
+
 /* Method codes.
 
    These codes must agree with the METHODS array in fastcluster.R and the
@@ -609,7 +616,16 @@ static void NN_chain_core(const t_index N, t_float * const D, t_members * const 
   if (feclearexcept(FE_INVALID)) throw fenv_error();
   #endif
 
+#ifdef TIMING
+  timer t = timer(); t.start();
+  double find_nn_time = 0;
+  double update_time = 0;
+#endif
+
   for (t_index j=0; j<N-1; ++j) {
+#ifdef TIMING
+  t.next();
+#endif
     if (NN_chain_tip <= 3) {
       NN_chain[0] = idx1 = active_nodes.start;
       NN_chain_tip = 1;
@@ -658,6 +674,10 @@ static void NN_chain_core(const t_index N, t_float * const D, t_members * const 
       idx1 = idx2;
       idx2 = tmp;
     }
+
+#ifdef TIMING
+    find_nn_time += t.next();
+#endif
 
     if (method==METHOD_METR_AVERAGE ||
         method==METHOD_METR_WARD) {
@@ -766,10 +786,18 @@ static void NN_chain_core(const t_index N, t_float * const D, t_members * const 
     default:
       throw std::runtime_error(std::string("Invalid method."));
     }
+#ifdef TIMING
+    update_time += t.next();
+#endif
   }
   #ifdef FE_INVALID
   if (fetestexcept(FE_INVALID)) throw fenv_error();
   #endif
+
+#ifdef TIMING
+  std::cout << "find_nn_time: " << find_nn_time << std::endl;
+  std::cout << "update_time: " << update_time << std::endl;
+#endif
 }
 
 t_float pointDistSq(t_float * const p, t_float * const q, int dim) {
@@ -893,7 +921,16 @@ static void NN_chain_core_otf( t_float * const Data, int dim, const t_index N, t
   
   distF distComputer = distF(members, Data, dim, N);
 
+#ifdef TIMING
+  timer t = timer(); t.start();
+  double find_nn_time = 0;
+  double update_time = 0;
+#endif
+
   for (t_index j=0; j<N-1; ++j) {
+#ifdef TIMING
+  t.next();
+#endif
     if (NN_chain_tip <= 3) {
       NN_chain[0] = idx1 = active_nodes.start;
       NN_chain_tip = 1;
@@ -943,6 +980,10 @@ static void NN_chain_core_otf( t_float * const Data, int dim, const t_index N, t
       idx2 = tmp;
     }
 
+#ifdef TIMING
+    find_nn_time += t.next();
+#endif
+
     distComputer.merge_inplace(idx1, idx2);
     // if (method==METHOD_METR_AVERAGE ||
     //     method==METHOD_METR_WARD) {
@@ -961,11 +1002,18 @@ static void NN_chain_core_otf( t_float * const Data, int dim, const t_index N, t
     active_nodes.remove(idx1);
 
     //no need to update matrix
-
+#ifdef TIMING
+    update_time += t.next();
+#endif
   }
   #ifdef FE_INVALID
   if (fetestexcept(FE_INVALID)) throw fenv_error();
   #endif
+
+#ifdef TIMING
+  std::cout << "find_nn_time: " << find_nn_time << std::endl;
+  std::cout << "update_time: " << update_time << std::endl;
+#endif
 }
 
 
