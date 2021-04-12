@@ -11,3 +11,5 @@ files.txt
 .vscode/settings.json
 dendro.txt
 instrumentscli1.trace/*
+outputs/*
+*.txt

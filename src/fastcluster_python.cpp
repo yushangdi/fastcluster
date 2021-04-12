@@ -61,6 +61,7 @@
 #include <new> // for std::bad_alloc
 #include <exception> // for std::exception
 
+#define TIMING
 #include "fastcluster.cpp"
 
 // backwards compatibility
@@ -463,7 +464,9 @@ private:
   python_dissimilarity & operator=(python_dissimilarity const &);
 
 public:
+#ifdef TIMING
   t_index count = 0;
+#endif
   // Ignore warning about uninitialized member variables. I know what I am
   // doing here, and some member variables are only used for certain metrics.
 #if HAVE_DIAGNOSTIC
@@ -484,7 +487,9 @@ public:
       postprocessfn(NULL),
       V(NULL)
   {
+#ifdef TIMING
     count = 0;
+#endif
     switch (method) {
     case METHOD_METR_SINGLE:
       postprocessfn = NULL; // default
@@ -718,23 +723,32 @@ public:
         (Z2.*postprocessfn)(postprocessarg);
     }
   }
-
+#ifdef TIMING
   inline t_float ward(const t_index i, const t_index j) { //const
     count++; 
+#else
+  inline t_float ward(const t_index i, const t_index j) const {
+#endif
     t_float mi = static_cast<t_float>(members[i]);
     t_float mj = static_cast<t_float>(members[j]);
     return sqeuclidean<true>(i,j)*mi*mj/(mi+mj);
   }
 
+#ifdef TIMING
   inline t_float ward_initial(const t_index i, const t_index j) { //const
-    // alias for sqeuclidean
-    // Factor 2!!!
-    count++; 
+  count++; 
+#else
+  inline t_float ward_initial(const t_index i, const t_index j) const {
+#endif
     return sqeuclidean<true>(i,j);
   }
 
+#ifdef TIMING
   inline t_float ward2(const t_index i, const t_index j) { //const
     count++;   
+#else
+  inline t_float ward2(const t_index i, const t_index j) const {
+#endif
     t_float mi = static_cast<t_float>(members[i]);
     t_float mj = static_cast<t_float>(members[j]);
     return 2*sqeuclidean<true>(i,j)*mi*mj/(mi+mj);
@@ -746,8 +760,7 @@ public:
     return min*.5;
   }
 
-  inline t_float ward_extended(const t_index i, const t_index j) { //const
-    count++;    
+  inline t_float ward_extended(const t_index i, const t_index j) const {
     t_float mi = static_cast<t_float>(members[i]);
     t_float mj = static_cast<t_float>(members[j]);
     return sqeuclidean_extended(i,j)*mi*mj/(mi+mj);
@@ -1264,7 +1277,7 @@ static PyObject *linkage_vector_wrap(PyObject * const, PyObject * const args) {
 }
 
 class python_dissimilarity2 {
-// private:
+private:
 public:
   t_float * Xa;
   std::ptrdiff_t dim; // size_t saves many statis_cast<> in products
@@ -1279,8 +1292,10 @@ public:
   python_dissimilarity2(python_dissimilarity2 const &);
   python_dissimilarity2 & operator=(python_dissimilarity2 const &);
 
-// public:
+public:
+#ifdef TIMING
   t_index count = 0;
+#endif
 
   python_dissimilarity2 (t_index * const members_, t_index N,
                         const method_codes _method,
@@ -1292,7 +1307,9 @@ public:
       members(members_),
       method(_method)
   {
+#ifdef TIMING
     count = 0;
+#endif
     switch (method) {
       case METHOD_METR_WARD:
       assert(metric == METRIC_EUCLIDEAN );
@@ -1351,15 +1368,23 @@ public:
     members[j] += members[i];
   }
 
+#ifdef TIMING
   inline t_float ward2(const t_index i, const t_index j) { //const
-    count++;   
+    count++; 
+#else
+  inline t_float ward2(const t_index i, const t_index j) const {
+#endif  
     t_float mi = static_cast<t_float>(members[i]);
     t_float mj = static_cast<t_float>(members[j]);
     return 2*sqeuclidean<true>(i,j)*mi*mj/(mi+mj);
   }
 
-  inline t_float avg2(const t_index i, const t_index j) {
-    count++;
+#ifdef TIMING
+  inline t_float avg2(const t_index i, const t_index j) { //const
+    count++; 
+#else
+  inline t_float avg2(const t_index i, const t_index j) const {
+#endif
     // return sqrt(pointDistSq(centers + (idx1 * dim) , centers + (idx2 * dim), dim) + vars[idx1] + vars[idx2]);
     return sqeuclidean<true>(i,j) + vars[i] + vars[j];
 

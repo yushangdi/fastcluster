@@ -5,7 +5,7 @@ import pandas as pd
 import numpy as np
 
 # 10D_UCI1_19K.pbbs
-data = pd.read_csv("/Users/sy/Desktop/MIT/OPTICS/pbbs/linkage/completeLinkage/datasets/10D_UCI1_19K.pbbs",  sep = " ", header=None)
+data = pd.read_csv("~/pbbs/linkage/completeLinkage/datasets/10D_UCI4_100K.pbbs",  sep = " ", header=None)
 # data = pd.read_csv("/Users/sy/Desktop/MIT/OPTICS/pbbs/linkage/completeLinkage/datasets/small/example2.pbbs",  sep = " ", header=None)
 print("start")
 # Z = fastcluster.linkage(data, method='average', metric='sqeuclidean')

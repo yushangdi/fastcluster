@@ -143,8 +143,6 @@ typedef int_fast32_t t_index;
 typedef double t_float;
 
 
-#define TIMING
-
 #ifdef TIMING
 #include "gettime.h"
 #endif
