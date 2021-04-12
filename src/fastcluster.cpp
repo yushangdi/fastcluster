@@ -800,104 +800,12 @@ static void NN_chain_core(const t_index N, t_float * const D, t_members * const 
 #endif
 }
 
-t_float pointDistSq(t_float * const p, t_float * const q, int dim) {
-  float_t xx=0;
-  for (int i=0; i<dim; ++i) xx += (p[i]-q[i])*(p[i]-q[i]);
-  return xx;
-} 
-
-struct AvgComputer{
-  t_float * vars;
-  t_index * sizes;
-  t_float * centers;
-  int dim;
-
-  AvgComputer(t_index * const _members, t_float * const Data, int _dim, t_index n):
-   sizes(_members), dim(_dim){
-    vars = (t_float *)malloc(n * sizeof(t_float));
-    for(t_index i=0; i<n;++i){
-      vars[i] = 0;
-    }
-
-    centers = (t_float *)malloc(n * dim * sizeof(t_float));
-    for(t_index i=0; i<n*dim;++i){
-      centers[i] = Data[i];
-    }
-  }
-
-  inline double dist(t_index idx1, t_index idx2){
-    return sqrt(pointDistSq(centers + (idx1 * dim) , centers + (idx2 * dim), dim) + vars[idx1] + vars[idx2]);
-  }
-  
-  void merge_inplace(const t_index i, const t_index j) const {
-    t_float const * const Pi = centers+i*dim;
-    t_float * const Pj = centers+j*dim;
-    t_float newCenter[dim];
-    for(t_index k=0; k<dim; ++k) {
-      newCenter[k] = (Pi[k]*static_cast<t_float>(sizes[i]) +
-               Pj[k]*static_cast<t_float>(sizes[j])) /
-        static_cast<t_float>(sizes[i]+sizes[j]);
-    }
-
-    vars[j] = sizes[i] * pointDistSq(centers + (i * dim) , newCenter, dim) + \
-          sizes[j] * pointDistSq(centers + (j * dim) , newCenter, dim) + \
-          sizes[i] * vars[i] + sizes[j] * vars[j]; 
-    vars[j] /= static_cast<t_float>(sizes[i]+sizes[j]);
-
-    for(t_index k=0; k<dim; ++k) {
-      Pj[k] = newCenter[k];
-    }
-
-    sizes[j] += sizes[i];
-  }
-
-  ~AvgComputer(){
-    free(vars);
-    free(centers);
-  }
-};
-
-struct WardComputer{
-  t_index * sizes;
-  t_float * centers;
-  int dim;
-
-  WardComputer(t_index * const _members, t_float * const Data, int _dim, t_index n):
-  sizes(_members), dim(_dim){
-    centers = (t_float *)malloc(n * dim * sizeof(t_float));
-    for(t_index i=0; i<n*dim;++i){
-      centers[i] = Data[i];
-    }
-  }
-
-  inline double dist(t_index idx1, t_index idx2){
-    double ni = (double) sizes[idx1]; 
-    double nj = (double) sizes[idx2];
-    return sqrt(2*(ni*nj)*pointDistSq(centers + (idx1 * dim) , centers + (idx2 * dim), dim)/(ni + nj));
-  }
-
-  void merge_inplace(const t_index i, const t_index j) const {
-    t_float const * const Pi = centers+i*dim;
-    t_float * const Pj = centers+j*dim;
-    for(t_index k=0; k<dim; ++k) {
-      Pj[k] = (Pi[k]*static_cast<t_float>(sizes[i]) +
-               Pj[k]*static_cast<t_float>(sizes[j])) /
-        static_cast<t_float>(sizes[i]+sizes[j]);
-    }
-    sizes[j] += sizes[i];
-  }
-
-  ~WardComputer(){
-    free(centers);
-  }
-};
-
 //compute distance on the fly
 // members: sizes
 // vars: variances
 // only works for wards and euclideansqr average
-template <method_codes method, typename t_members, class distF>
-static void NN_chain_core_otf( t_float * const Data, int dim, const t_index N, t_members * const members, cluster_result & Z2) {
+template <method_codes method, typename t_members, typename t_dissimilarity>
+static void NN_chain_core_otf_avg(t_dissimilarity & dist, const t_index N, t_members * const members, cluster_result & Z2) {
 /*
     N: integer
     Z2: output data structure
@@ -919,13 +827,15 @@ static void NN_chain_core_otf( t_float * const Data, int dim, const t_index N, t
 
   t_float min;
   
-  distF distComputer = distF(members, Data, dim, N);
+  // distF distComputer = distF(members, Data, dim, N);
+  // python_dissimilarity3 dist(members, method, dist2.Xa, dim);
 
 #ifdef TIMING
   timer t = timer(); t.start();
   double find_nn_time = 0;
   double update_time = 0;
 #endif
+
 
   for (t_index j=0; j<N-1; ++j) {
 #ifdef TIMING
@@ -936,10 +846,11 @@ static void NN_chain_core_otf( t_float * const Data, int dim, const t_index N, t
       NN_chain_tip = 1;
 
       idx2 = active_nodes.succ[idx1];
-      min = distComputer.dist(idx1,idx2);
+      min = dist.avg2(idx1,idx2);
       for (i=active_nodes.succ[idx2]; i<N; i=active_nodes.succ[i]) {
-        if (distComputer.dist(idx1,i) < min) {
-          min = distComputer.dist(idx1,i);
+        t_float d = dist.avg2(idx1,i);
+        if (d < min) {
+          min = d;
           idx2 = i;
         }
       }
@@ -948,21 +859,17 @@ static void NN_chain_core_otf( t_float * const Data, int dim, const t_index N, t
       NN_chain_tip -= 3;
       idx1 = NN_chain[NN_chain_tip-1];
       idx2 = NN_chain[NN_chain_tip];
-      min = idx1<idx2 ? distComputer.dist(idx1,idx2) : distComputer.dist(idx2,idx1);
+      min = dist.avg2(idx2,idx1);//idx1<idx2 ? distComputer.dist(idx1,idx2) : distComputer.dist(idx2,idx1);
     }  // a: idx1   b: idx2
 
     do {
       NN_chain[NN_chain_tip] = idx2;
 
-      for (i=active_nodes.start; i<idx2; i=active_nodes.succ[i]) {
-        if (distComputer.dist(i,idx2) < min) {
-          min = distComputer.dist(i,idx2);
-          idx1 = i;
-        }
-      }
-      for (i=active_nodes.succ[idx2]; i<N; i=active_nodes.succ[i]) {
-        if (distComputer.dist(idx2,i) < min) {
-          min = distComputer.dist(idx2,i);
+      for (i=active_nodes.start; i<N; i=active_nodes.succ[i]) {
+        if(i == idx2) continue;
+        double d = dist.avg2(i,idx2);
+        if (d < min) {
+          min = d;
           idx1 = i;
         }
       }
@@ -973,6 +880,7 @@ static void NN_chain_core_otf( t_float * const Data, int dim, const t_index N, t
     } while (idx2 != NN_chain[NN_chain_tip-2]);
 
     Z2.append(idx1, idx2, min);
+    // std::cout << idx1 << " " << min << std::endl;
 
     if (idx1>idx2) {
       t_index tmp = idx1;
@@ -984,19 +892,7 @@ static void NN_chain_core_otf( t_float * const Data, int dim, const t_index N, t
     find_nn_time += t.next();
 #endif
 
-    distComputer.merge_inplace(idx1, idx2);
-    // if (method==METHOD_METR_AVERAGE ||
-    //     method==METHOD_METR_WARD) {
-    //   size1 = static_cast<t_float>(members[idx1]);
-    //   size2 = static_cast<t_float>(members[idx2]);
-      
-    //   //TODO : update vars
-    //   // vars[idx2] = size1 * left_mu.pointDistSq(clusterNode->center) + \
-    //   //           size2 * right_mu.pointDistSq(clusterNode->center) + \
-    //   //           size1 * vars[idx1] + size2 * vars[idx2]; 
-    //   // vars[idx2] /= (size1 +size2);
-    //   members[idx2] += members[idx1];
-    // }
+    dist.merge_inplace_avg(idx1, idx2);
 
     // Remove the smaller index from the valid indices (active_nodes).
     active_nodes.remove(idx1);
@@ -1013,6 +909,116 @@ static void NN_chain_core_otf( t_float * const Data, int dim, const t_index N, t
 #ifdef TIMING
   std::cout << "find_nn_time: " << find_nn_time << std::endl;
   std::cout << "update_time: " << update_time << std::endl;
+  std::cout << "dist num: " << dist.count << std::endl;
+#endif
+}
+
+template <method_codes method, typename t_members, typename t_dissimilarity>
+static void NN_chain_core_otf_ward(t_dissimilarity & dist, const t_index N, t_members * const members, cluster_result & Z2) {
+/*
+    N: integer
+    Z2: output data structure
+
+    This is the NN-chain algorithm, described on page 86 in the following book:
+
+    Fionn Murtagh, Multidimensional Clustering Algorithms,
+    Vienna, Würzburg: Physica-Verlag, 1985.
+*/
+  t_index i;
+
+  auto_array_ptr<t_index> NN_chain(N);
+  t_index NN_chain_tip = 0;
+
+  t_index idx1, idx2;
+
+  // t_float size1, size2;
+  doubly_linked_list active_nodes(N);
+
+  t_float min;
+  
+  // distF distComputer = distF(members, Data, dim, N);
+  // python_dissimilarity3 dist(members, method, dist2.Xa, dim);
+
+#ifdef TIMING
+  timer t = timer(); t.start();
+  double find_nn_time = 0;
+  double update_time = 0;
+#endif
+
+
+  for (t_index j=0; j<N-1; ++j) {
+#ifdef TIMING
+  t.next();
+#endif
+    if (NN_chain_tip <= 3) {
+      NN_chain[0] = idx1 = active_nodes.start;
+      NN_chain_tip = 1;
+
+      idx2 = active_nodes.succ[idx1];
+      min = dist.ward2(idx1,idx2);
+      for (i=active_nodes.succ[idx2]; i<N; i=active_nodes.succ[i]) {
+        t_float d = dist.ward2(idx1,i);
+        if (d < min) {
+          min = d;
+          idx2 = i;
+        }
+      }
+    }  // a: idx1   b: idx2
+    else {
+      NN_chain_tip -= 3;
+      idx1 = NN_chain[NN_chain_tip-1];
+      idx2 = NN_chain[NN_chain_tip];
+      min = dist.ward2(idx2,idx1);//idx1<idx2 ? distComputer.dist(idx1,idx2) : distComputer.dist(idx2,idx1);
+    }  // a: idx1   b: idx2
+
+    do {
+      NN_chain[NN_chain_tip] = idx2;
+
+      for (i=active_nodes.start; i<N; i=active_nodes.succ[i]) {
+        if(i == idx2) continue;
+        double d = dist.ward2(i,idx2);
+        if (d < min) {
+          min = d;
+          idx1 = i;
+        }
+      }
+
+      idx2 = idx1;
+      idx1 = NN_chain[NN_chain_tip++];
+
+    } while (idx2 != NN_chain[NN_chain_tip-2]);
+
+    Z2.append(idx1, idx2, min);
+    // std::cout << idx1 << " " << min << std::endl;
+
+    if (idx1>idx2) {
+      t_index tmp = idx1;
+      idx1 = idx2;
+      idx2 = tmp;
+    }
+
+#ifdef TIMING
+    find_nn_time += t.next();
+#endif
+
+    dist.merge_inplace_ward(idx1, idx2);
+
+    // Remove the smaller index from the valid indices (active_nodes).
+    active_nodes.remove(idx1);
+
+    //no need to update matrix
+#ifdef TIMING
+    update_time += t.next();
+#endif
+  }
+  #ifdef FE_INVALID
+  if (fetestexcept(FE_INVALID)) throw fenv_error();
+  #endif
+
+#ifdef TIMING
+  std::cout << "find_nn_time: " << find_nn_time << std::endl;
+  std::cout << "update_time: " << update_time << std::endl;
+  std::cout << "dist num: " << dist.count << std::endl;
 #endif
 }
 
@@ -1690,7 +1696,11 @@ static void generic_linkage_vector(const t_index N,
                         // the distance to the nearest neighbor of each point
   t_index node1, node2;     // node numbers in the output
   t_float min; // minimum and row index for nearest-neighbor search
-
+#ifdef TIMING
+  timer t = timer(); t.start();
+  double find_nn_time = 0;
+  double update_time = 0;
+#endif
   for (i=0; i<N; ++i)
     // Build a list of row ↔ node label assignments.
     // Initially i ↦ i
@@ -1725,11 +1735,16 @@ static void generic_linkage_vector(const t_index N,
     }
     n_nghbr[i] = idx;
   }
-
+#ifdef TIMING
+  std::cout << "distmatrix: " << t.next() << std::endl;
+  std::cout << "dist num: " << dist.count << std::endl;
+#endif
   // Put the minimal distances into a heap structure to make the repeated
   // global minimum searches fast.
   nn_distances.heapify();
-
+#ifdef TIMING
+  std::cout << "heapify: " << t.next() << std::endl;
+#endif
   // Main loop: We have N-1 merging steps.
   for (i=0; i<N_1; ++i) {
     idx1 = nn_distances.argmin();
@@ -1740,7 +1755,7 @@ static void generic_linkage_vector(const t_index N,
       switch (method) {
       case METHOD_VECTOR_WARD:
         min = dist.ward(idx1,j);
-        for (j=active_nodes.succ[j]; j<N; j=active_nodes.succ[j]) {
+        for (j=active_nodes.succ[j]; j<N; j=active_nodes.succ[j]) {//why not all active ndoes? only the changed ones?
           t_float const tmp = dist.ward(idx1,j);
           if (tmp<min) {
             min = tmp;
@@ -1789,7 +1804,9 @@ static void generic_linkage_vector(const t_index N,
     row_repr[idx2] = N+i;
     // Remove idx1 from the list of active indices (active_nodes).
     active_nodes.remove(idx1);  // TBD later!!!
-
+#ifdef TIMING
+    find_nn_time += t.next();
+#endif
     // Update the distance matrix
     switch (method) {
     case METHOD_VECTOR_WARD:
@@ -1800,7 +1817,7 @@ static void generic_linkage_vector(const t_index N,
         but maybe bigger than max(d1,d2).
       */
       // Update the distance matrix in the range [start, idx1).
-      for (j=active_nodes.start; j<idx1; j=active_nodes.succ[j]) {
+      for (j=active_nodes.start; j<idx1; j=active_nodes.succ[j]) { //why no need to compute?
         if (n_nghbr[j] == idx2) {
           n_nghbr[j] = idx1; // invalidate
         }
@@ -1861,7 +1878,15 @@ static void generic_linkage_vector(const t_index N,
         nn_distances.update(idx2, min);
       }
     }
-  }
+#ifdef TIMING
+    update_time += t.next();
+#endif
+  } //for loop end
+#ifdef TIMING
+  std::cout << "find_nn_time: " << find_nn_time << std::endl;
+  std::cout << "update_time: " << update_time << std::endl;
+  std::cout << "dist num: " << dist.count << std::endl;
+#endif
 }
 
 template <method_codes_vector method, typename t_dissimilarity>

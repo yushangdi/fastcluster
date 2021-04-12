@@ -390,141 +390,6 @@ static PyObject *linkage_wrap(PyObject * const, PyObject * const args) {
 }
 
 
-static PyObject *linkage_vector_wrap_nnchain(PyObject * const, PyObject * const args) {
-  PyArrayObject * X, * Z;
-  unsigned char method, metric;
-  PyObject * extraarg;
-
-  try{
-#if HAVE_DIAGNOSTIC
-#pragma GCC diagnostic push
-#pragma GCC diagnostic ignored "-Wold-style-cast"
-#endif
-    // Parse the input arguments
-    if (!PyArg_ParseTuple(args, "O!O!bbO",
-                          &PyArray_Type, &X, // NumPy array
-                          &PyArray_Type, &Z, // NumPy array
-                          &method,           // unsigned char
-                          &metric,           // unsigned char
-                          &extraarg )) {     // Python object
-      return NULL;
-    }
-#if HAVE_DIAGNOSTIC
-#pragma GCC diagnostic pop
-#endif
-
-    if (PyArray_NDIM(X) != 2) {
-      PyErr_SetString(PyExc_ValueError,
-                      "The input array must be two-dimensional.");
-    }
-    npy_intp const N_ = PyArray_DIM(X, 0);
-    if (N_ < 1 ) {
-      // N must be at least 1.
-      PyErr_SetString(PyExc_ValueError,
-                      "At least one element is needed for clustering.");
-      return NULL;
-    }
-
-    npy_intp const dim = PyArray_DIM(X, 1);
-    if (dim < 1 ) {
-      PyErr_SetString(PyExc_ValueError,
-                      "Invalid dimension of the data set.");
-      return NULL;
-    }
-
-    /*
-      (1)
-      The biggest index used below is 4*(N-2)+3, as an index to Z. This must
-      fit into the data type used for indices.
-      (2)
-      The largest representable integer, without loss of precision, by a
-      floating point number of type t_float is 2^T_FLOAT_MANT_DIG. Here, we
-      make sure that all cluster labels from 0 to 2N-2 in the output can be
-      accurately represented by a floating point number.
-
-      Conversion of N to 64 bits below is not really necessary but it prevents
-      a warning ("shift count >= width of type") on systems where "long int"
-      is 32 bits wide.
-    */
-    if (N_ > MAX_INDEX/4 || dim > MAX_INDEX ||
-        static_cast<int64_t>(N_-1)>>(T_FLOAT_MANT_DIG-1) > 0) {
-      PyErr_SetString(PyExc_ValueError,
-                      "Data is too big, index overflow.");
-      return NULL;
-    }
-    t_index N = static_cast<t_index>(N_);
-
-    // Allow threads!
-    GIL_release G;
-
-    t_float * const Xa = reinterpret_cast<t_float *>(PyArray_DATA(X));
-    cluster_result Z2(N-1);
-    auto_array_ptr<t_index> members;
-    // For these methods, the distance update formula needs the number of
-    // data points in a cluster.
-    if (method==METHOD_METR_AVERAGE ||
-        method==METHOD_METR_WARD ||
-        method==METHOD_METR_CENTROID) {
-      members.init(N, 1);
-    }
-
-    switch (method) {
-    case METHOD_METR_AVERAGE:
-      NN_chain_core_otf<METHOD_METR_AVERAGE, t_index, AvgComputer>(Xa, dim, N, members, Z2);
-      break;
-    case METHOD_METR_WARD:
-      NN_chain_core_otf<METHOD_METR_WARD, t_index, WardComputer>(Xa, dim, N, members, Z2);
-      break;
-    default:
-      throw std::runtime_error(std::string("Invalid method index."));
-    }
-
-    if (method==METHOD_METR_AVERAGE) {
-      Z2.square();
-    }
-
-    t_float * const Z_ = reinterpret_cast<t_float *>(PyArray_DATA(Z));
-    if (method==METHOD_METR_CENTROID ||
-        method==METHOD_METR_MEDIAN) {
-      generate_SciPy_dendrogram<true>(Z_, Z2, N);
-    }
-    else {
-      generate_SciPy_dendrogram<false>(Z_, Z2, N);
-    }
-  } // try
-  catch (const std::bad_alloc&) {
-    return PyErr_NoMemory();
-  }
-  catch(const std::exception& e){
-    PyErr_SetString(PyExc_EnvironmentError, e.what());
-    return NULL;
-  }
-  catch(const nan_error&){
-    PyErr_SetString(PyExc_FloatingPointError, "NaN dissimilarity value.");
-    return NULL;
-  }
-  #ifdef FE_INVALID
-  catch(const fenv_error&){
-    PyErr_SetString(PyExc_FloatingPointError,
-                    "NaN dissimilarity value in intermediate results.");
-    return NULL;
-  }
-  #endif
-  catch(...){
-    PyErr_SetString(PyExc_EnvironmentError,
-                    "C++ exception (unknown reason). Please send a bug report.");
-    return NULL;
-  }
-#if HAVE_DIAGNOSTIC
-#pragma GCC diagnostic push
-#pragma GCC diagnostic ignored "-Wold-style-cast"
-#endif
-  Py_RETURN_NONE;
-#if HAVE_DIAGNOSTIC
-#pragma GCC diagnostic pop
-#endif
-}
-
 /*
    Part 2: Clustering on vector data
 */
@@ -598,6 +463,7 @@ private:
   python_dissimilarity & operator=(python_dissimilarity const &);
 
 public:
+  t_index count = 0;
   // Ignore warning about uninitialized member variables. I know what I am
   // doing here, and some member variables are only used for certain metrics.
 #if HAVE_DIAGNOSTIC
@@ -618,6 +484,7 @@ public:
       postprocessfn(NULL),
       V(NULL)
   {
+    count = 0;
     switch (method) {
     case METHOD_METR_SINGLE:
       postprocessfn = NULL; // default
@@ -794,7 +661,7 @@ public:
   inline t_float operator () (const t_index i, const t_index j) const {
     return (this->*distfn)(i,j);
   }
-
+ 
   inline t_float X (const t_index i, const t_index j) const {
     return Xa[i*dim+j];
   }
@@ -852,24 +719,35 @@ public:
     }
   }
 
-  inline t_float ward(const t_index i, const t_index j) const {
+  inline t_float ward(const t_index i, const t_index j) { //const
+    count++; 
     t_float mi = static_cast<t_float>(members[i]);
     t_float mj = static_cast<t_float>(members[j]);
     return sqeuclidean<true>(i,j)*mi*mj/(mi+mj);
   }
 
-  inline t_float ward_initial(const t_index i, const t_index j) const {
+  inline t_float ward_initial(const t_index i, const t_index j) { //const
     // alias for sqeuclidean
     // Factor 2!!!
+    count++; 
     return sqeuclidean<true>(i,j);
   }
+
+  inline t_float ward2(const t_index i, const t_index j) { //const
+    count++;   
+    t_float mi = static_cast<t_float>(members[i]);
+    t_float mj = static_cast<t_float>(members[j]);
+    return 2*sqeuclidean<true>(i,j)*mi*mj/(mi+mj);
+  }
+
 
   // This method must not produce NaN if the input is non-NaN.
   inline static t_float ward_initial_conversion(const t_float min) {
     return min*.5;
   }
 
-  inline t_float ward_extended(const t_index i, const t_index j) const {
+  inline t_float ward_extended(const t_index i, const t_index j) { //const
+    count++;    
     t_float mi = static_cast<t_float>(members[i]);
     t_float mj = static_cast<t_float>(members[j]);
     return sqeuclidean_extended(i,j)*mi*mj/(mi+mj);
@@ -1384,6 +1262,285 @@ static PyObject *linkage_vector_wrap(PyObject * const, PyObject * const args) {
 #pragma GCC diagnostic pop
 #endif
 }
+
+class python_dissimilarity2 {
+// private:
+public:
+  t_float * Xa;
+  std::ptrdiff_t dim; // size_t saves many statis_cast<> in products
+  t_index * members;
+  t_float * vars;
+  method_codes method;
+
+  // t_float (python_dissimilarity2::*distfn) (const t_index, const t_index);
+
+  // noncopyable
+  python_dissimilarity2();
+  python_dissimilarity2(python_dissimilarity2 const &);
+  python_dissimilarity2 & operator=(python_dissimilarity2 const &);
+
+// public:
+  t_index count = 0;
+
+  python_dissimilarity2 (t_index * const members_, t_index N,
+                        const method_codes _method,
+                        const metric_codes metric,
+                        // PyObject * const extraarg,
+                        t_float * const Data, int _dim)
+    : Xa(Data),
+      dim(_dim),
+      members(members_),
+      method(_method)
+  {
+    count = 0;
+    switch (method) {
+      case METHOD_METR_WARD:
+      assert(metric == METRIC_EUCLIDEAN );
+      // distfn = &python_dissimilarity2::ward2;
+      break;
+      case METHOD_METR_AVERAGE:
+      assert(metric == SQEUCLIDEAN);
+      vars = new t_float[N];
+      for(t_index i=0; i<N;++i){
+        vars[i] = 0;
+      }
+      // distfn = &python_dissimilarity2::avg2;
+      break;
+      
+      default:
+          PyErr_SetString(PyExc_ValueError,
+          "invalid method");
+          throw pythonerror();
+    }
+
+  }
+  ~python_dissimilarity2() {
+    if(method == METHOD_METR_AVERAGE) delete [] vars;
+  }
+
+  void merge_inplace_ward(const t_index i, const t_index j) const {
+    t_float const * const Pi = Xa+i*dim;
+    t_float * const Pj = Xa+j*dim;
+    for(t_index k=0; k<dim; ++k) {
+      Pj[k] = (Pi[k]*static_cast<t_float>(members[i]) +
+               Pj[k]*static_cast<t_float>(members[j])) /
+        static_cast<t_float>(members[i]+members[j]);
+    }
+    members[j] += members[i];
+  }
+
+  void merge_inplace_avg(const t_index i, const t_index j) const {
+    t_float const * const Pi = Xa+i*dim;
+    t_float * const Pj = Xa+j*dim;
+    t_float newCenter[dim];
+    for(t_index k=0; k<dim; ++k) {
+      newCenter[k] = (Pi[k]*static_cast<t_float>(members[i]) +
+               Pj[k]*static_cast<t_float>(members[j])) /
+        static_cast<t_float>(members[i]+members[j]);
+    }
+
+    vars[j] = members[i] * sqeuclidean(i, newCenter) + \
+          members[j] * sqeuclidean(j, newCenter) + \
+          members[i] * vars[i] + members[j] * vars[j]; 
+    vars[j] /= static_cast<t_float>(members[i]+members[j]);
+
+    for(t_index k=0; k<dim; ++k) {
+      Pj[k] = newCenter[k];
+    }
+
+    members[j] += members[i];
+  }
+
+  inline t_float ward2(const t_index i, const t_index j) { //const
+    count++;   
+    t_float mi = static_cast<t_float>(members[i]);
+    t_float mj = static_cast<t_float>(members[j]);
+    return 2*sqeuclidean<true>(i,j)*mi*mj/(mi+mj);
+  }
+
+  inline t_float avg2(const t_index i, const t_index j) {
+    count++;
+    // return sqrt(pointDistSq(centers + (idx1 * dim) , centers + (idx2 * dim), dim) + vars[idx1] + vars[idx2]);
+    return sqeuclidean<true>(i,j) + vars[i] + vars[j];
+
+  }
+  /* We need two variants of the Euclidean metric: one that does not check
+     for a NaN result, which is used for the initial distances, and one which
+     does, for the updated distances during the clustering procedure.
+  */
+  template <const bool check_NaN>
+  t_float sqeuclidean(const t_index i, const t_index j) const {
+    t_float sum = 0;
+    t_float const * Pi = Xa+i*dim;
+    t_float const * Pj = Xa+j*dim;
+    for (t_index k=0; k<dim; ++k) {
+      t_float diff = Pi[k] - Pj[k];
+      sum += diff*diff;
+    }
+    return sum;
+  }
+
+  t_float sqeuclidean(const t_index i, t_float const * Pj) const {
+    t_float sum = 0;
+    t_float const * Pi = Xa+i*dim;
+    for (t_index k=0; k<dim; ++k) {
+      t_float diff = Pi[k] - Pj[k];
+      sum += diff*diff;
+    }
+    return sum;
+  }
+
+  // inline t_float operator () (const t_index i, const t_index j) {
+  //   return (this->*distfn)(i,j);
+  // }
+
+};
+
+
+static PyObject *linkage_vector_wrap_nnchain(PyObject * const, PyObject * const args) {
+  PyArrayObject * X, * Z;
+  unsigned char method, metric;
+  PyObject * extraarg;
+
+  try{
+#if HAVE_DIAGNOSTIC
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wold-style-cast"
+#endif
+    // Parse the input arguments
+    if (!PyArg_ParseTuple(args, "O!O!bbO",
+                          &PyArray_Type, &X, // NumPy array
+                          &PyArray_Type, &Z, // NumPy array
+                          &method,           // unsigned char
+                          &metric,           // unsigned char
+                          &extraarg )) {     // Python object
+      return NULL;
+    }
+#if HAVE_DIAGNOSTIC
+#pragma GCC diagnostic pop
+#endif
+
+    if (PyArray_NDIM(X) != 2) {
+      PyErr_SetString(PyExc_ValueError,
+                      "The input array must be two-dimensional.");
+    }
+    npy_intp const N_ = PyArray_DIM(X, 0);
+    if (N_ < 1 ) {
+      // N must be at least 1.
+      PyErr_SetString(PyExc_ValueError,
+                      "At least one element is needed for clustering.");
+      return NULL;
+    }
+
+    npy_intp const dim = PyArray_DIM(X, 1);
+    if (dim < 1 ) {
+      PyErr_SetString(PyExc_ValueError,
+                      "Invalid dimension of the data set.");
+      return NULL;
+    }
+
+    /*
+      (1)
+      The biggest index used below is 4*(N-2)+3, as an index to Z. This must
+      fit into the data type used for indices.
+      (2)
+      The largest representable integer, without loss of precision, by a
+      floating point number of type t_float is 2^T_FLOAT_MANT_DIG. Here, we
+      make sure that all cluster labels from 0 to 2N-2 in the output can be
+      accurately represented by a floating point number.
+
+      Conversion of N to 64 bits below is not really necessary but it prevents
+      a warning ("shift count >= width of type") on systems where "long int"
+      is 32 bits wide.
+    */
+    if (N_ > MAX_INDEX/4 || dim > MAX_INDEX ||
+        static_cast<int64_t>(N_-1)>>(T_FLOAT_MANT_DIG-1) > 0) {
+      PyErr_SetString(PyExc_ValueError,
+                      "Data is too big, index overflow.");
+      return NULL;
+    }
+    t_index N = static_cast<t_index>(N_);
+
+    // Allow threads!
+    GIL_release G;
+
+    t_float * const Xa = reinterpret_cast<t_float *>(PyArray_DATA(X));
+    cluster_result Z2(N-1);
+    auto_array_ptr<t_index> members;
+    // For these methods, the distance update formula needs the number of
+    // data points in a cluster.
+    if (method==METHOD_METR_AVERAGE ||
+        method==METHOD_METR_WARD ||
+        method==METHOD_METR_CENTROID) {
+      members.init(N, 1);
+    }
+
+        python_dissimilarity2 dist(members, N, static_cast<method_codes>(method),
+                              static_cast<metric_codes>(metric),
+                              Xa, dim);
+
+    switch (method) {
+    case METHOD_METR_AVERAGE:
+      NN_chain_core_otf_avg<METHOD_METR_AVERAGE, t_index>(dist, N, members, Z2);
+      break;
+    case METHOD_METR_WARD:
+      NN_chain_core_otf_ward<METHOD_METR_WARD, t_index>(dist, N, members, Z2);
+      break;
+    default:  
+      throw std::runtime_error(std::string("Invalid method index."));
+    }
+
+    // if (method==METHOD_METR_AVERAGE) {
+    //   Z2.square();
+    // }
+    if (method==METHOD_METR_WARD ||
+        method==METHOD_METR_CENTROID ||
+        method==METHOD_METR_MEDIAN) {
+      Z2.sqrt();
+    }
+
+    t_float * const Z_ = reinterpret_cast<t_float *>(PyArray_DATA(Z));
+    if (method==METHOD_METR_CENTROID ||
+        method==METHOD_METR_MEDIAN) {
+      generate_SciPy_dendrogram<true>(Z_, Z2, N);
+    }
+    else {
+      generate_SciPy_dendrogram<false>(Z_, Z2, N);
+    }
+  } // try
+  catch (const std::bad_alloc&) {
+    return PyErr_NoMemory();
+  }
+  catch(const std::exception& e){
+    PyErr_SetString(PyExc_EnvironmentError, e.what());
+    return NULL;
+  }
+  catch(const nan_error&){
+    PyErr_SetString(PyExc_FloatingPointError, "NaN dissimilarity value.");
+    return NULL;
+  }
+  #ifdef FE_INVALID
+  catch(const fenv_error&){
+    PyErr_SetString(PyExc_FloatingPointError,
+                    "NaN dissimilarity value in intermediate results.");
+    return NULL;
+  }
+  #endif
+  catch(...){
+    PyErr_SetString(PyExc_EnvironmentError,
+                    "C++ exception (unknown reason). Please send a bug report.");
+    return NULL;
+  }
+#if HAVE_DIAGNOSTIC
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wold-style-cast"
+#endif
+  Py_RETURN_NONE;
+#if HAVE_DIAGNOSTIC
+#pragma GCC diagnostic pop
+#endif
+}
+
 
 #if HAVE_VISIBILITY
 #pragma GCC visibility pop

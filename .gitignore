@@ -8,3 +8,6 @@ src/.vscode/
 .ipynb_checkpoints/
 Untitled.ipynb
 files.txt
+.vscode/settings.json
+dendro.txt
+instrumentscli1.trace/*
