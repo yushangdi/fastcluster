@@ -61,7 +61,7 @@
 #include <new> // for std::bad_alloc
 #include <exception> // for std::exception
 
-#define TIMING
+// #define TIMING
 #include "fastcluster.cpp"
 
 // backwards compatibility

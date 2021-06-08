@@ -10,7 +10,7 @@ This is adapted from the fastcluster project: http://danifold.net/fastcluster.ht
 
 
 ```bash
-python setup.py install
+python setup.py install # you might need sudo priviledge
 ```
 
 # Run
