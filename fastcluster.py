@@ -35,7 +35,7 @@ except ImportError:
                           'vector data since the function '
                           'scipy.spatial.distance.pdist could not be  '
                           'imported.')
-from _fastcluster import linkage_wrap, linkage_vector_wrap, linkage_vector_wrap_nnchain
+from _fastcluster import linkage_wrap, linkage_vector_wrap, linkage_vector_wrap_nnchain, linkage_wrap_generic
 
 def single(D):
     '''Single linkage clustering (alias). See the help on the “linkage”
@@ -278,6 +278,33 @@ mtridx = {'euclidean'      :  0,
 
 booleanmetrics = ('yule', 'matching', 'dice', 'kulsinski', 'rogerstanimoto',
                   'sokalmichener', 'russellrao', 'sokalsneath', 'kulsinski')
+
+def linkage_generic(X, method='single', metric='euclidean', preserve_input=True):
+    r'''Hierarchical, agglomerative clustering on a dissimilarity matrix or on
+Euclidean data. only uses the generic method with distance matrix'''
+    start_time = time.time()
+    X = array(X, copy=False, subok=True)
+    if X.ndim==1:
+        if method=='single':
+            preserve_input = False
+        X = array(X, dtype=double, copy=preserve_input, order='C', subok=True)
+        NN = len(X)
+        N = int(ceil(sqrt(NN*2)))
+        if (N*(N-1)//2) != NN:
+            raise ValueError(r'The length of the condensed distance matrix '
+                             r'must be (k \choose 2) for k data points!')
+    else:
+        assert X.ndim==2
+        N = len(X)
+        X = pdist(X, metric=metric)
+        X = array(X, dtype=double, copy=False, order='C', subok=True)
+    print("matrix: ", time.time()-start_time)
+    start_time = time.time()
+    Z = empty((N-1,4))
+    if N > 1:
+        linkage_wrap_generic(N, X, Z, mthidx[method])
+    print("hierarchy: ", time.time()-start_time)
+    return Z
 
 def linkage_vector_nnchain(X, method='ward', metric='euclidean', extraarg=None):
     start_time = time.time()
